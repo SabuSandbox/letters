@@ -47,12 +47,18 @@
         .letter-type label { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 14px; cursor: pointer; }
         .letter-type input { accent-color: #3184df; }
         .mode-fields[hidden] { display: none; }
-        textarea {
+        .rich-editor {
             width: 100%; min-height: 180px; padding: 12px 14px; background: rgba(255,255,255,.07);
             border: 1px solid rgba(255,255,255,.2); border-radius: 8px; box-sizing: border-box;
-            font: inherit; font-size: 13px; line-height: 1.5; color: #fff; resize: vertical;
+            font-size: 13px; line-height: 1.5; color: #fff; outline: none; overflow-wrap: anywhere;
         }
-        textarea:focus { outline: none; border-color: #1565c0; background: rgba(255,255,255,.1); }
+        .rich-editor:focus { border-color: #1565c0; background: rgba(255,255,255,.1); }
+        .rich-editor:empty::before { content: attr(data-placeholder); color: #888; pointer-events: none; }
+        .rich-editor p { margin: 0 0 1em; }
+        .choice-group { display: flex; gap: 22px; margin: 0 0 18px; }
+        .choice-group label { display: flex; align-items: center; gap: 8px; margin: 0; cursor: pointer; font-size: 13px; }
+        .choice-group input { accent-color: #3184df; }
+        .field-note { margin: -8px 0 16px; color: #aaa; font-size: 12px; }
         
         label { display: block; font-weight: 400; margin-bottom: 8px; font-size: 12px; color: #ccc; } 
         input[type="text"] { 
@@ -149,9 +155,15 @@
                     <input type="text" id="subject" placeholder="Letter subject" required disabled>
                 </div></div>
                 <div class="form-row"><div class="form-group">
-                    <label for="body">Letter body</label>
-                    <textarea id="body" placeholder="Write the letter body. Use a blank line between paragraphs." required disabled></textarea>
+                    <label id="body-label" for="body">Letter body</label>
+                    <div id="body" class="rich-editor" contenteditable="true" role="textbox" aria-labelledby="body-label" aria-multiline="true" data-placeholder="Write or paste the letter body here." tabindex="0" hidden></div>
                 </div></div>
+                <fieldset class="choice-group" aria-label="Authorised signatory">
+                    <label><input type="radio" name="signatoryMode" value="current" checked> Current authorised signatory</label>
+                    <label><input type="radio" name="signatoryMode" value="new"> New authorised signatory</label>
+                </fieldset>
+                <p id="current-signatory-note" class="field-note">Uses the existing Sudhir Kumar, AVP-HR signature from the template.</p>
+                <div id="new-signatory-fields" hidden>
                 <div class="form-row"><div class="form-group">
                     <label for="signatoryName">Authorised signatory name</label>
                     <input type="text" id="signatoryName" required disabled>
@@ -170,6 +182,7 @@
                     <label for="signatoryEmail">Email</label>
                     <input type="text" id="signatoryEmail" disabled>
                 </div></div>
+                </div>
             </div>
             
             <button type="button" class="btn-primary" onclick="generateWordDoc()">Download Word (.docx)</button>
@@ -197,15 +210,34 @@
         document.querySelectorAll('input[name="letterType"]').forEach((radio) => {
             radio.addEventListener('change', updateLetterMode);
         });
+        document.querySelectorAll('input[name="signatoryMode"]').forEach((radio) => {
+            radio.addEventListener('change', updateSignatoryMode);
+        });
         updateLetterMode();
+        updateSignatoryMode();
     });
 
     function updateLetterMode() {
         const custom = document.querySelector('input[name="letterType"]:checked').value === 'custom';
         document.getElementById('internship-fields').hidden = custom;
         document.getElementById('custom-fields').hidden = !custom;
-        document.querySelectorAll('#internship-fields input, #custom-fields input, #custom-fields textarea').forEach((field) => {
+        document.querySelectorAll('#internship-fields input, #custom-fields input').forEach((field) => {
             field.disabled = custom ? field.closest('#internship-fields') !== null : field.closest('#custom-fields') !== null;
+        });
+        const body = document.getElementById('body');
+        body.hidden = !custom;
+        body.setAttribute('contenteditable', custom ? 'true' : 'false');
+        updateSignatoryMode();
+    }
+
+    function updateSignatoryMode() {
+        const fieldGroup = document.getElementById('new-signatory-fields');
+        if (!fieldGroup) return;
+        const useNew = document.querySelector('input[name="signatoryMode"]:checked').value === 'new';
+        fieldGroup.hidden = !useNew;
+        document.getElementById('current-signatory-note').hidden = useNew;
+        fieldGroup.querySelectorAll('input').forEach((field) => {
+            field.disabled = !useNew || document.getElementById('custom-fields').hidden;
         });
     }
 
@@ -220,22 +252,31 @@
         if (!form.reportValidity()) return;
 
         if (isCustom) {
+            const bodyElement = document.getElementById('body');
+            if (!bodyElement.textContent.trim()) {
+                bodyElement.focus();
+                alert('Please enter the letter body.');
+                return;
+            }
             const customData = {
+                letterDate: document.getElementById('letterDate').value,
                 recipient: document.getElementById('recipient').value.trim(),
                 salutation: document.getElementById('recipient').value.trim().split(/[\s,]+/)[0],
                 subject: document.getElementById('subject').value.trim(),
-                body: document.getElementById('body').value.trim(),
+                bodyXml: bodyToWordXml(bodyElement),
                 signatoryName: document.getElementById('signatoryName').value.trim(),
                 signatoryDesignation: document.getElementById('signatoryDesignation').value.trim(),
                 signatoryAddress: document.getElementById('signatoryAddress').value.trim(),
                 signatoryContact: document.getElementById('signatoryContact').value.trim(),
-                signatoryEmail: document.getElementById('signatoryEmail').value.trim()
+                signatoryEmail: document.getElementById('signatoryEmail').value.trim(),
+                signatoryMode: document.querySelector('input[name="signatoryMode"]:checked').value
             };
             loadFile('custom_letter_template.docx', function(error, content) {
                 if (error) { alert("Error: Could not load 'custom_letter_template.docx'. Make sure it is in the same folder and you are running this on a local web server."); return; }
                 try {
                     const doc = new window.docxtemplater(new PizZip(content), { paragraphLoop: true, linebreaks: true });
                     doc.render(customData);
+                    removeCurrentSignatoryForNewLetter(doc, customData.signatoryMode);
                     const out = doc.getZip().generate({ type: 'blob', mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
                     const safeName = customData.recipient.replace(/[^a-zA-Z0-9]/g, '_') || 'Recipient';
                     saveAs(out, `Custom_Letter_${safeName}.docx`);
@@ -281,6 +322,140 @@
             const sanitizedName = templateData.internName.replace(/[^a-zA-Z0-9]/g, '_') || 'Intern';
             saveAs(out, `Internship_Letter_${sanitizedName}.docx`);
         });
+    }
+
+    function removeCurrentSignatoryForNewLetter(doc, signatoryMode) {
+        const file = doc.getZip().file('word/document.xml');
+        const xmlDoc = new DOMParser().parseFromString(file.asText(), 'application/xml');
+        const wordNs = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
+        const paragraphs = Array.from(xmlDoc.getElementsByTagNameNS(wordNs, 'p'));
+        const markers = ['[[newSignatoryName]]', '[[newSignatoryDetails]]'];
+        paragraphs.forEach((paragraph) => {
+            const text = paragraph.textContent || '';
+            const marker = markers.find((candidate) => text.includes(candidate));
+            if (marker) {
+                if (signatoryMode === 'current') paragraph.parentNode.removeChild(paragraph);
+                else Array.from(paragraph.getElementsByTagNameNS(wordNs, 't')).forEach((node) => { node.textContent = node.textContent.replace(marker, ''); });
+            } else if (signatoryMode === 'new' && text.includes('For Pearl Global Industries Limited')) {
+                Array.from(paragraph.getElementsByTagNameNS(wordNs, 'drawing')).forEach((drawing) => drawing.parentNode.removeChild(drawing));
+            }
+        });
+        doc.getZip().file('word/document.xml', new XMLSerializer().serializeToString(xmlDoc));
+    }
+
+    function bodyToWordXml(editor) {
+        const xml = (value) => String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        const xmlAttr = (value) => xml(value).replace(/"/g, '&quot;');
+        const paragraphs = [];
+
+        function runXml(text, marks) {
+            if (!text) return '';
+            const props = [];
+            if (marks.bold) props.push('<w:b/>');
+            if (marks.italic) props.push('<w:i/>');
+            if (marks.underline) props.push('<w:u w:val="single"/>');
+            if (marks.strike) props.push('<w:strike/>');
+            if (marks.sup) props.push('<w:vertAlign w:val="superscript"/>');
+            if (marks.sub) props.push('<w:vertAlign w:val="subscript"/>');
+            if (marks.color) props.push(`<w:color w:val="${marks.color}"/>`);
+            if (marks.background) props.push(`<w:shd w:val="clear" w:color="auto" w:fill="${marks.background}"/>`);
+            if (marks.font) {
+                const font = xmlAttr(marks.font);
+                props.push(`<w:rFonts w:ascii="${font}" w:hAnsi="${font}" w:eastAsia="${font}"/>`);
+            }
+            if (marks.size) props.push(`<w:sz w:val="${marks.size}"/><w:szCs w:val="${marks.size}"/>`);
+            return `<w:r>${props.length ? `<w:rPr>${props.join('')}</w:rPr>` : ''}<w:t xml:space="preserve">${xml(text)}</w:t></w:r>`;
+        }
+
+        function walk(node, marks, paragraph) {
+            if (node.nodeType === Node.TEXT_NODE) return runXml(node.nodeValue, marks);
+            if (node.nodeType !== Node.ELEMENT_NODE) return '';
+            const tag = node.tagName.toUpperCase();
+            const next = { ...marks };
+            if (tag === 'B' || tag === 'STRONG') next.bold = true;
+            if (tag === 'I' || tag === 'EM') next.italic = true;
+            if (tag === 'U') next.underline = true;
+            if (tag === 'S' || tag === 'STRIKE') next.strike = true;
+            if (tag === 'SUB') next.sub = true;
+            if (tag === 'SUP') next.sup = true;
+            const style = node.getAttribute('style') || '';
+            if (/font-weight\s*:\s*(?:bold|[6-9]00)/i.test(style)) next.bold = true;
+            if (/font-style\s*:\s*italic/i.test(style)) next.italic = true;
+            if (/text-decoration(?:-line)?\s*:[^;]*underline/i.test(style)) next.underline = true;
+            if (/text-decoration(?:-line)?\s*:[^;]*(?:line-through|strike)/i.test(style)) next.strike = true;
+            const toColor = (value) => {
+                const hex = value.match(/#([0-9a-f]{3}|[0-9a-f]{6})/i);
+                if (hex) return hex[1].length === 3 ? hex[1].split('').map((part) => part + part).join('').toUpperCase() : hex[1].toUpperCase();
+                const rgb = value.match(/rgb\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*\)/i);
+                return rgb ? rgb.slice(1).map((part) => Number(part).toString(16).padStart(2, '0')).join('').toUpperCase() : '';
+            };
+            const color = style.match(/(?:^|;)\s*color\s*:\s*([^;]+)/i);
+            const background = style.match(/(?:^|;)\s*background-color\s*:\s*([^;]+)/i);
+            const size = style.match(/(?:^|;)\s*font-size\s*:\s*([0-9.]+)\s*(pt|px)?/i);
+            const font = style.match(/(?:^|;)\s*font-family\s*:\s*([^;]+)/i);
+            if (color && toColor(color[1])) next.color = toColor(color[1]);
+            if (background && toColor(background[1])) next.background = toColor(background[1]);
+            if (size) next.size = Math.round(Number(size[1]) * ((size[2] || 'pt').toLowerCase() === 'px' ? 1.5 : 2));
+            if (font) next.font = font[1].split(',')[0].trim().replace(/^['"]|['"]$/g, '');
+            if (tag === 'FONT') {
+                const face = node.getAttribute('face');
+                const fontColor = toColor(node.getAttribute('color') || '');
+                const fontSize = Number(node.getAttribute('size'));
+                if (face) next.font = face;
+                if (fontColor) next.color = fontColor;
+                if (fontSize) next.size = Math.max(12, Math.min(72, 2 * (fontSize + 7)));
+            }
+            if (tag === 'BR') return '<w:r><w:br/></w:r>';
+            const children = Array.from(node.childNodes).map((child) => walk(child, next, paragraph)).join('');
+            if (tag === 'LI') return `<w:r><w:t>• </w:t></w:r>${children}`;
+            return children;
+        }
+
+        function paragraphXml(node) {
+            const style = node.nodeType === Node.ELEMENT_NODE ? (node.getAttribute('style') || '') : '';
+            const spacing = style.match(/(?:^|;)\s*line-height\s*:\s*([0-9.]+)\s*(px|pt|em|%)?/i);
+            const spaceAfter = style.match(/(?:^|;)\s*margin-bottom\s*:\s*([0-9.]+)\s*(px|pt|em)?/i);
+            const spaceBefore = style.match(/(?:^|;)\s*margin-top\s*:\s*([0-9.]+)\s*(px|pt|em)?/i);
+            const alignment = style.match(/(?:^|;)\s*text-align\s*:\s*(left|center|right|justify)/i);
+            const indent = style.match(/(?:^|;)\s*margin-left\s*:\s*([0-9.]+)\s*(px|pt)?/i);
+            const firstLineIndent = style.match(/(?:^|;)\s*text-indent\s*:\s*([0-9.]+)\s*(px|pt)?/i);
+            const pProps = [];
+            const spacingAttrs = [];
+            if (spacing) {
+                const unit = (spacing[2] || '').toLowerCase();
+                const line = unit === 'px' ? Math.round(Number(spacing[1]) * 15) :
+                    unit === 'pt' ? Math.round(Number(spacing[1]) * 20) :
+                    Math.round(Number(spacing[1]) * (unit === '%' ? 2.4 : 240));
+                spacingAttrs.push(`w:line="${line}"`, `w:lineRule="${unit === 'px' || unit === 'pt' ? 'exact' : 'auto'}"`);
+            }
+            const toTwips = (match) => Math.round(Number(match[1]) * ((match[2] || '').toLowerCase() === 'px' ? 15 : 20));
+            if (spaceBefore) spacingAttrs.push(`w:before="${toTwips(spaceBefore)}"`);
+            if (spaceAfter) spacingAttrs.push(`w:after="${toTwips(spaceAfter)}"`);
+            if (spacingAttrs.length) pProps.push(`<w:spacing ${spacingAttrs.join(' ')}/>`);
+            if (alignment) pProps.push(`<w:jc w:val="${alignment[1].toLowerCase()}"/>`);
+            if (indent || firstLineIndent) {
+                const left = indent ? ` w:left="${toTwips(indent)}"` : '';
+                const first = firstLineIndent ? ` w:firstLine="${toTwips(firstLineIndent)}"` : '';
+                pProps.push(`<w:ind${left}${first}/>`);
+            }
+            const content = node.nodeType === Node.TEXT_NODE ? runXml(node.nodeValue, {}) : walk(node, {}, node);
+            return `<w:p>${pProps.length ? `<w:pPr>${pProps.join('')}</w:pPr>` : ''}${content || '<w:r><w:t></w:t></w:r>'}</w:p>`;
+        }
+
+        function collect(node) {
+            if (node.nodeType === Node.ELEMENT_NODE && ['P', 'DIV', 'LI'].includes(node.tagName.toUpperCase())) {
+                paragraphs.push(paragraphXml(node));
+                return;
+            }
+            if (node.nodeType === Node.ELEMENT_NODE && node.tagName.toUpperCase() === 'BR') {
+                paragraphs.push('<w:p><w:r><w:t></w:t></w:r></w:p>');
+                return;
+            }
+            if (node.nodeType === Node.TEXT_NODE && node.nodeValue.trim()) paragraphs.push(paragraphXml(node));
+            else Array.from(node.childNodes || []).forEach(collect);
+        }
+        Array.from(editor.childNodes).forEach(collect);
+        return paragraphs.join('');
     }
 </script>
 </body>
